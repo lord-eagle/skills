@@ -20,7 +20,7 @@ Built on `solo-orchestration` (mechanism layer). Read that first if unfamiliar �
 | Want different AI vendors weighing in | **use this** | — |
 | Time-critical (<10 min) | — | use this |
 
-Cost reality: 3 panelists × 4 rounds ≈ 12-16 LLM calls + orchestrator synthesis. Reserve for decisions that justify that.
+Cost reality: 3 panelists × 3 rounds ≈ 9-12 LLM calls + orchestrator synthesis. Roughly 50k tokens panel-side for a real cross-project brainstorm. Reserve for decisions that justify that.
 
 ## Modes
 
@@ -37,11 +37,12 @@ Mode is runtime decision based on topic. Default to `hybrid`.
 In:
 - All three modes
 - Project selection: `list_projects()` → suggest → user confirm
-- Fixed agent runtime (use first available `agent_tool_id` for all panelists)
+- Fixed agent runtime — prefer Claude (`agent_tool_id` for `tool_type=="claude"`) for all panelists; only fall back to first-available if no Claude registered. Reason: only Claude reliably runs with `--dangerously-skip-permissions` so scratchpad writes don't prompt; other runtimes may stall silently. v2 will add per-persona runtime assignment.
 - Round protocol with synthesis + convergence detection
 - Final verdict archived to orchestrator-project scratchpad
 - Read-only enforcement + secret-leak guard in panelist seed
 - Cross-project scoping per `solo-orchestration` rules
+- Per-panelist idle-timer registration (one timer per panelist, scoped to its own project — see Cross-Project Timer Caveat below)
 
 Deferred:
 - Runtime-aware assignment (v2 — see `lord-eagle/skills` issue #2)
@@ -54,7 +55,7 @@ Deferred:
 | Knob | Default | Reason |
 |------|---------|--------|
 | Panel size | 3 | Enough for disagreement, small enough to quote each verbatim |
-| MAX_ROUNDS | 4 | Diminishing returns past 3, hard cap at 4 |
+| MAX_ROUNDS | 3 | Real-world brainstorms converge in 3 rounds. Allow 4 only if convergence not detected after round 3 |
 | Convergence | DELTA="no change" 2 rounds OR POSITION cluster | Stop when stable |
 | Per-round response cap | 300 words | Token discipline |
 | Synthesis cap | 500 words | Orchestrator memory bound |
@@ -104,33 +105,40 @@ Orchestrator pid: {ORCH_PID}. Orchestrator project_id: {ORCH_PROJECT_ID}.
 You represent: {PROJECT_OR_PERSONA_LABEL}
 Your lens: {LENS_DESCRIPTION}
 
+PROJECT CONTEXT HINTS:
+- GitHub repo for this project: {GH_REPO_HINT_OR_"discover via `git remote -v`"}
+- Default branch: {DEFAULT_BRANCH_OR_"discover via `git symbolic-ref refs/remotes/origin/HEAD`"}
+
 CONSTRAINTS:
 - READ-ONLY. You are a consultant, not implementer. Do NOT modify files in your project.
 - Do NOT echo file contents verbatim in callbacks. Summarize patterns, not values. Never quote .env, secrets, credentials, tokens.
 - You may NOT call spawn_process. No sub-panelists. Reason within your own session only.
 - Stay in character every round. Re-read your lens before responding.
+- When making a factual claim about your project (file exists, function does X, dep is pinned to Y), CITE the file path or function name. Verify against actual code before asserting. If unsure, say "I believe..." not assert.
+- Use ONLY scratchpad_write + send_input for the reporting contract below. IGNORE other Solo coordination tools (kv_set, lock_acquire, timer_set, todos) — they are not part of this protocol.
 
-REPORTING CONTRACT:
-Per round, write your response to scratchpad in orchestrator's project:
+REPORTING CONTRACT (follow exactly):
+
+Step 1 — Write your response to scratchpad in orchestrator's project. The `name` parameter MUST be the literal string below — do NOT substitute your own title or H1; the orchestrator looks you up by author name + round number, but consistent naming helps debugging:
   scratchpad_write(
     name="panel-{SPAWN_PID}-round-{N}",
-    project_id="{ORCH_PROJECT_ID}",
-    content=<full response, ≤300 words, ending with the three required lines below>
+    project_id={ORCH_PROJECT_ID},
+    content=<full response body, ≤300 words, ending with the three required lines below>
   )
 
-Required ending lines (exact format):
+Required ending lines in your scratchpad content (exact format, exact labels):
   POSITION: <one line — your current stance>
   TOP_RISK: <one line — biggest risk you see>
   DELTA: <what changed your view since last round, or "initial">
 
-Then signal completion:
+Step 2 — Signal completion via send_input:
   send_input(
-    process_id="{ORCH_PID}",
-    project_id="{ORCH_PROJECT_ID}",
+    process_id={ORCH_PID},
+    project_id={ORCH_PROJECT_ID},
     input="PANEL {SPAWN_PID} ROUND {N} DONE"
   )
 
-ALWAYS pass project_id on cross-project send_input and scratchpad calls — your default scope differs from orchestrator's.
+ALWAYS pass project_id on cross-project send_input and scratchpad calls — your default scope ({YOUR_PROJECT_ID}) differs from orchestrator's ({ORCH_PROJECT_ID}).
 Do NOT send_input for intermediate progress within a round.
 ```
 
@@ -162,8 +170,9 @@ ORCH_PID = me.process_id
 ORCH_PROJECT_ID = me.project_id
 
 agents = list_agent_tools()
-# v1: pick first available agent_tool_id, use for all panelists
-AGENT_ID = agents[0].id
+# Prefer Claude (only runtime that reliably has --dangerously-skip-permissions);
+# fall back to first-available if no Claude registered.
+AGENT_ID = next((a.id for a in agents if a.tool_type == "claude"), agents[0].id)
 
 # 2. Resolve panel composition
 projects = list_projects()
@@ -171,7 +180,7 @@ panel_plan = build_panel(topic, mode, projects)  # see Cross-Project Lens Select
 confirm_with_user(panel_plan)
 
 # 3. Spawn panelists
-panel = []  # list of (pid, project_id, label, lens)
+panel = []  # list of (pid, project_id, label, lens, gh_repo_hint)
 for entry in panel_plan:
     r = spawn_process(
         kind="agent",
@@ -181,37 +190,64 @@ for entry in panel_plan:
     )
     seed = SEED_TEMPLATE.format(
         SPAWN_PID=r.process_id, ORCH_PID=ORCH_PID, ORCH_PROJECT_ID=ORCH_PROJECT_ID,
+        YOUR_PROJECT_ID=entry.project_id,
         PANEL_NAME=entry.label, PROJECT_OR_PERSONA_LABEL=entry.label,
         LENS_DESCRIPTION=entry.lens,
+        GH_REPO_HINT_OR_DISCOVER=entry.gh_repo_hint or "discover via `git remote -v`",
+        DEFAULT_BRANCH_OR_DISCOVER=entry.default_branch or "discover via `git symbolic-ref refs/remotes/origin/HEAD`",
     )
     send_input(r.process_id, r.agent_instructions + "\n\n" + seed)
-    panel.append((r.process_id, entry.project_id, entry.label, entry.lens))
+    panel.append((r.process_id, entry.project_id, entry.label, entry.lens, entry.gh_repo_hint))
+
+# 3b. VERIFY seed delivery (send_input bytes-sent != delivered to fresh agent — see QA finding #6)
+# Wait briefly, then check each panelist's terminal shows the seed prompt rendered.
+sleep(2)
+for pid, panel_project_id, label, _, _ in panel:
+    out = get_process_output(pid, project_id=panel_project_id, lines=20)
+    if "REPORTING CONTRACT" not in out:
+        # Seed didn't land. Re-send with same content.
+        re_send_seed(pid, panel_project_id, label)
 
 # 4. Round loop
 synthesis = "initial round"
 for round_n in range(1, MAX_ROUNDS + 1):
-    # Dispatch
-    for pid, _, label, lens in panel:
-        send_input(pid, ROUND_TEMPLATE.format(
-            TOPIC=topic, N=round_n, MAX_ROUNDS=MAX_ROUNDS,
-            ORCHESTRATOR_SYNTHESIS_OR_INITIAL=synthesis,
-            LENS_DESCRIPTION=lens,
-        ))
-
-    # Wait fan-in (Pattern C: send_input + idle-timer safety net)
-    timer_fire_when_idle_all(
-        processes=[pid for pid, _, _, _ in panel],
-        max_wait_ms=10 * 60 * 1000,
-        body=f"Round {round_n} fan-in. Read panel-<pid>-round-{round_n} scratchpads for any panelist that did not send_input."
-    )
-
-    # On wake: collect responses
-    responses = []
-    for pid, _, label, _ in panel:
-        content = scratchpad_read(
-            name=f"panel-{pid}-round-{round_n}",
-            project_id=ORCH_PROJECT_ID,
+    # Dispatch round prompt to each panelist (in their project scope)
+    for pid, panel_project_id, label, lens, _ in panel:
+        send_input(
+            pid,
+            project_id=panel_project_id,
+            input=ROUND_TEMPLATE.format(
+                TOPIC=topic, N=round_n, MAX_ROUNDS=MAX_ROUNDS,
+                ORCHESTRATOR_SYNTHESIS_OR_INITIAL=synthesis,
+                LENS_DESCRIPTION=lens,
+            ),
         )
+
+    # Wait fan-in (Pattern C: send_input + idle-timer safety net).
+    # CROSS-PROJECT CAVEAT: timer_fire_when_idle_all CANNOT watch pids across
+    # multiple projects in a single call — it errors with "Process ID not found
+    # in the requested project scope". Register ONE timer per panelist scoped
+    # to its own project_id.
+    for pid, panel_project_id, label, _, _ in panel:
+        timer_fire_when_idle_all(
+            processes=[pid],
+            project_id=panel_project_id,
+            max_wait_ms=10 * 60 * 1000,
+            body=f"Panel {pid} ({label}) round {round_n} idle.",
+        )
+    # Then orchestrator goes quiet. Wakes on either:
+    #   (a) panelist send_input callback (Pattern B — fast path), OR
+    #   (b) idle-timer fire (Pattern A safety net — may be stale if callback
+    #       already arrived; just verify scratchpad and continue).
+
+    # On wake: discover scratchpads (panelists may name them via their own H1
+    # rather than the literal `name=` parameter — see QA finding #5; lookup by
+    # author actor name + round number is the reliable path).
+    pads = scratchpad_list(project_id=ORCH_PROJECT_ID)
+    responses = []
+    for pid, _, label, _, _ in panel:
+        pad = find_pad_for(pads, author_actor=f"panelist-{label}", round_n=round_n)
+        content = scratchpad_read(scratchpad_id=pad.id, project_id=ORCH_PROJECT_ID, content_only=True)
         responses.append((label, content, parse_position_lines(content)))
 
     # Synthesize — quote POSITION/TOP_RISK lines verbatim, do NOT paraphrase away dissent
@@ -225,18 +261,30 @@ for round_n in range(1, MAX_ROUNDS + 1):
 verdict = build_verdict(topic, panel_plan, synthesis, rounds_run=round_n)
 present_to_user(verdict)
 
-# 6. Archive
+# 6. Archive (lookup by id from list — name ≠ URL slug after Solo derives it from H1)
 scratchpad_write(
     name=f"brainstorm-{slugify(topic)}-{today}",
     project_id=ORCH_PROJECT_ID,
     content=verdict,
+    tags=["brainstorm-verdict"],
 )
 
 # 7. Cleanup
-for pid, _, _, _ in panel:
-    scratchpad_archive(name=f"panel-{pid}-round-*", project_id=ORCH_PROJECT_ID)
-    close_process(pid)
+for pid, panel_project_id, label, _, _ in panel:
+    for pad in find_round_pads_for(pads, author_actor=f"panelist-{label}"):
+        scratchpad_archive(scratchpad_id=pad.id, project_id=ORCH_PROJECT_ID)
+    close_process(pid, project_id=panel_project_id)
 ```
+
+## Cross-Project Timer Caveat
+
+Confirmed in v1 live test: `timer_fire_when_idle_all([pid1, pid2, pid3])` errors with `"Process ID '<pid>' not found in the requested project scope"` whenever any pid lives outside the timer's project. There is no single-call multi-project fan-in primitive in Solo MCP today.
+
+Workaround (used in the recipe above): register **one timer per panelist**, scoped to that panelist's own `project_id`. Each fires independently when its panelist idles. The orchestrator wakes once per panelist. Pair with Pattern B `send_input` callbacks for the fast path; ignore stale timer fires if scratchpad was already consumed.
+
+## Stale Timer Fires Are Normal
+
+When Pattern C is in effect (combo of `send_input` callback + idle-timer safety net), the orchestrator typically wakes via the `send_input` first, processes the result, and then receives the timer-fire wake-up afterwards. This is a **stale fire** — harmless, just check whether the scratchpad has already been consumed and move on. Do not re-process.
 
 ## Convergence Detection
 
@@ -267,6 +315,64 @@ User does NOT watch panelist chatter live. User sees:
 
 Like meeting minutes, not the meeting itself.
 
+## Verdict Template — Required Sections
+
+Every archived verdict MUST include the following sections, in this order:
+
+1. **TL;DR** — 3-7 bullets capturing the locked decisions
+2. **Per-project / per-panelist breakdown** — concrete deliverables, ownership, sequence
+3. **Cross-cutting agreements** (architecture decisions, policies, rules locked across panel)
+4. **Open items for out-of-band resolution** — anything the panel could not lock
+5. **Provenance** — pointers to round scratchpad ids, synthesis pads, QA log
+6. **Provenance & Usage** — see template below
+
+### Provenance & Usage block (mandatory)
+
+```
+## Provenance & Usage
+
+**Brainstorm runtime:** solo-multi-agent-brainstorm v{SKILL_VERSION}
+**Date:** {DATE}
+**Rounds:** {N} (converged before MAX_ROUNDS={MAX_ROUNDS}) | (hit MAX_ROUNDS={MAX_ROUNDS}, no convergence)
+**Total wall time:** ~{MINUTES} min
+
+**Panel composition & runtime:**
+
+| Panelist | pid | Project | Lens | Agent runtime | Model |
+|----------|-----|---------|------|---------------|-------|
+| {label}  | {pid} | {project_name} ({project_id}) | {lens} | {agent_tool_name} (id={agent_tool_id}) | {model_name_if_known} |
+| ...      | ...   | ...                            | ...    | ...                                    | ...                  |
+
+**Diversity assessment:**
+- Single-vendor panel → "**Echo chamber risk:** all N panelists ran on {vendor}. Convergence may overstate consensus."
+- Multi-vendor panel → "**Vendor mix:** {list}. Diversity reduces correlated bias."
+
+**Orchestrator:** {agent_runtime} (pid {ORCH_PID}, project {ORCH_PROJECT_NAME})
+
+**Token usage (estimated, order-of-magnitude only):**
+
+| Component | Tokens (in+out, rough) |
+|-----------|------------------------|
+| Panelist {pid} ({rounds_run} rounds + seed{retry_note}) | ~{N}k |
+| ... | ... |
+| Orchestrator — synthesis + verdict | ~{N}k |
+| **Total panel-side** | **~{N}k** |
+| **Total session including orchestrator** | **~{N}k** |
+
+Estimation method: bytes sent/received via Solo `send_input` + scratchpad write sizes ÷ ~4 chars/token. Solo MCP does not expose per-spawn token counts today; treat as order-of-magnitude. Record raw counts + model name + date — re-price from current rates if cost calculation needed.
+
+**Available agent runtimes (not used this run):** {list_other_agents_from_list_agent_tools}
+
+**Convergence trigger:** {one of: POSITION-line clustering | DELTA="no change" 2 rounds | MAX_ROUNDS hit | user interrupt}
+```
+
+Why this is mandatory:
+- **Trust calibration**: same verdict from 3 Claude vs 3 mixed-vendor panelists means very different things.
+- **Reproducibility**: future re-runs need to know what model + version was used.
+- **Cost accountability**: invisible cost = cost shock when budget hits.
+- **Skill QA**: cross-run comparison ("multi-vendor panel converged in 2 rounds vs 3 for single-vendor") only possible with this data.
+- **PII guard**: scan actor names + project labels before archive — they may include client/customer hints.
+
 ## Anti-Patterns
 
 Do NOT:
@@ -275,6 +381,9 @@ Do NOT:
 - Forget secret-leak guard — panelist may quote .env contents in callback
 - Allow panelist to call `spawn_process` — recursion explosion
 - Use `timer_set(loop=true)` for round dispatch — wastes cache
+- Call `timer_fire_when_idle_all` with cross-project pids in one call — errors out; register one timer per panelist in its own project instead
+- Trust `send_input`'s "bytes sent" response as proof of delivery — fresh agents may not consume the input; verify with `get_process_output` before relying on the seed
+- Look up panelist scratchpads by `name=` parameter — Solo derives URL slug from the response's H1; lookup reliably by author actor name + round number via `scratchpad_list`
 - Send round prompt before all panelists from prior round have completed — race
 - Paraphrase POSITION lines in synthesis — bias drift
 - Skip convergence check and loop to MAX_ROUNDS by default — wasted tokens
@@ -301,10 +410,34 @@ Do NOT:
 | Need | Action |
 |------|--------|
 | Discover panelist projects | `list_projects()` |
-| Discover agent runtimes | `list_agent_tools()` (v1: use first; v2: assignment matrix) |
-| Spawn panelist in another project | `spawn_process(kind="agent", project_id=X)` |
-| Dispatch round | `send_input(panel_pid, ROUND_TEMPLATE, project_id=panel.project_id)` |
-| Wait for round complete | `timer_fire_when_idle_all(processes=panel_pids, max_wait_ms=600000)` |
-| Read panelist response | `scratchpad_read(name="panel-{pid}-round-{N}", project_id=ORCH_PROJECT_ID)` |
-| Archive verdict | `scratchpad_write(name="brainstorm-{slug}-{date}", project_id=ORCH_PROJECT_ID)` |
-| Tear down panelist | `scratchpad_archive` per round + `close_process(pid)` |
+| Discover agent runtimes | `list_agent_tools()` — prefer `tool_type=="claude"`, fall back to first |
+| Spawn panelist in another project | `spawn_process(kind="agent", agent_tool_id=AGENT_ID, project_id=X)` |
+| Verify seed delivered | `get_process_output(pid, project_id=panel_project_id, lines=20)`, look for "REPORTING CONTRACT" |
+| Dispatch round | `send_input(pid, project_id=panel_project_id, input=ROUND_TEMPLATE)` |
+| Wait for round complete | One `timer_fire_when_idle_all(processes=[pid], project_id=panel_project_id, ...)` per panelist |
+| Discover round scratchpads | `scratchpad_list(project_id=ORCH_PROJECT_ID)` then filter by `updated_by_actor_name == f"panelist-{label}"` |
+| Read panelist response | `scratchpad_read(scratchpad_id=pad.id, project_id=ORCH_PROJECT_ID, content_only=True)` |
+| Archive verdict | `scratchpad_write(name="brainstorm-{slug}-{date}", project_id=ORCH_PROJECT_ID, tags=["brainstorm-verdict"])` |
+| Tear down panelist | `scratchpad_archive(scratchpad_id=pad.id, ...)` per round pad + `close_process(pid, project_id=panel_project_id)` |
+
+## Changelog
+
+### v1.1 (2026-04-25, post first live test)
+
+Patches based on real brainstorm execution against gaze / gaze-laravel / Dashboard:
+
+- **Cross-project timer fix**: `timer_fire_when_idle_all` cannot watch pids across projects in one call. Recipe now registers one timer per panelist in its own project. Added Cross-Project Timer Caveat section.
+- **Seed-delivery verification**: `send_input` to fresh agent may silently fail (bytes-sent ≠ delivered). Recipe now adds `get_process_output` check after seed and re-sends on miss.
+- **Scratchpad lookup model**: panelists override `name=` parameter via their own H1; URL slug derives from the H1 not the name. Recipe now looks up by `updated_by_actor_name` + round number via `scratchpad_list`. Stronger directive in seed prompt to use exact `name=` (best-effort) but recipe doesn't depend on it.
+- **MAX_ROUNDS default**: lowered from 4 to 3. Real brainstorms converge in 3 rounds; 4 is padding. Override allowed when convergence not detected after 3.
+- **Agent runtime preference**: prefer Claude (`tool_type=="claude"`) over first-available — only Claude reliably has `--dangerously-skip-permissions` so scratchpad writes don't stall.
+- **Project context hints**: seed prompt now includes GH repo + default branch hints (with discovery fallback via `git remote -v` / `git symbolic-ref`).
+- **Factual-claim discipline**: seed prompt now requires panelists to cite file path / function name when asserting facts about their project.
+- **Tool ignore-list**: seed prompt now explicitly tells panelists to use only `scratchpad_write` + `send_input`, ignore other Solo coordination tools (`kv_set`, `lock_acquire`, `timer_set`, todos).
+- **Stale timer fires documented**: Pattern C combo produces benign stale fires; orchestrator recipe + new section explain to ignore.
+- **Anti-Patterns + Quick Reference**: updated to reflect all of the above.
+- **Verdict Template — Provenance & Usage block**: every verdict now MUST document panel composition (per-panelist agent runtime + model), diversity assessment (echo-chamber warning for single-vendor), token usage estimate, available-but-unused runtimes, and convergence trigger. Trust calibration and reproducibility require it.
+
+### v1.0 (2026-04-25)
+
+Initial release. See `versions/rev-1.md`.
