@@ -1,12 +1,6 @@
 ---
 name: review-triage
-description: >-
-  Triages PR review feedback into Must fix / Should fix / Nice to have / Nit buckets.
-  Use when deciding what blocks merge versus what becomes follow-up issues.
-  Bundles non-blocking findings into one GitHub issue per severity and places them in
-  Artistfy project 2 via the GitHub CLI. Supports early-exit via a `review-triage:complete`
-  marker comment on PRs whose head SHA has not changed.
-  Do not use for automated dependency PR validation or merge automation.
+description: Triages PR review feedback into Must fix / Should fix / Nice to have / Nit buckets. Use when deciding what blocks merge versus what becomes follow-up issues. Bundles non-blocking findings into one GitHub issue per severity. Project board placement is opt-in per repo via `.github/review-triage.yml`; without that file, follow-up issues are created with priority labels but not placed on any project. Supports early-exit via a `review-triage:complete` marker comment on PRs whose head SHA has not changed. Do not use for automated dependency PR validation or merge automation.
 ---
 
 # Review Triage
@@ -31,8 +25,8 @@ Do not use this skill for:
 3. Never create a follow-up issue for a `Must fix`.
 4. Deduplicate overlapping comments before classifying or creating issues.
 5. If tooling for issue creation is unavailable, output issue drafts instead of claiming issues were created.
-6. For this repository, use the GitHub CLI for follow-up issue creation and project placement when available.
-7. Place created follow-up issues into the Artistfy project at `https://github.com/orgs/Artistfy/projects/2`, preferring `Todo` or `Next` instead of backlog.
+6. Use the GitHub CLI for follow-up issue creation, and for project placement only when the current repository has opted in via `.github/review-triage.yml` (see "Project Placement Configuration").
+7. Project placement is **off by default**. If the repo has no `.github/review-triage.yml`, create issues with priority labels and report "no project placement configured for this repo" — do not invent or hardcode a target project.
 8. Default to one bundled follow-up issue per non-blocking severity bucket, not one issue per finding.
 9. Use an adaptive review depth: triage existing feedback when the PR is unchanged since its latest substantive review, otherwise review the unreviewed changes first.
 10. The skill may exit early only when a valid `review-triage` marker comment matches the current PR head SHA.
@@ -90,9 +84,9 @@ If a comment is mostly subjective and has no concrete product or engineering ris
 
 ## Priority Mapping
 
-Priority is expressed as a GitHub **issue label**, not a project field — the
-Artistfy Dashboard project (project 2) does not expose a Priority field, so
-attempting to set one there will fail silently.
+Priority is expressed as a GitHub **issue label**, not a project field. Many
+project boards do not expose a Priority field at all, so attempting to set one
+there will fail silently. Always set priority via the issue label.
 
 | Review Severity | Priority Label |
 |-----------------|----------------|
@@ -102,13 +96,18 @@ attempting to set one there will fail silently.
 
 Apply the label at issue-creation time with `gh issue create --label priority:high`.
 
-Use this default project lane (Status) mapping for project 2:
+When a repo has opted in to project placement (see "Project Placement
+Configuration"), the following default project lane (Status) mapping is used
+unless overridden by the repo's config file:
 
 | Review Severity | Default Project Lane |
 |-----------------|----------------------|
 | `Should fix` | `Next` |
 | `Nice to have` | `Todo` |
 | `Nit` | `Todo` |
+
+When no project is configured for the repo, ignore the lane mapping entirely
+and just create the labeled issue.
 
 ## Workflow
 
@@ -238,14 +237,17 @@ If the environment supports issue creation for the repository:
 - include PR number and link when available
 - use concrete, action-oriented titles
 - assign priority from the mapping above
-- add the created issue to the Artistfy project `2`
-- place it into `Todo` or `Next` when possible instead of leaving it in backlog only
+
+Project placement is conditional and per-repo:
+- check whether the repo has `.github/review-triage.yml` (or `.yaml`) — see "Project Placement Configuration" below
+- if yes, add the created issue to the configured project and lane
+- if no, skip placement and report "no project placement configured for this repo" in the output (informational, not a failure)
 
 If issue creation is not available:
 - produce issue drafts in the same structure
 - state clearly that they were not created
 
-Never pretend an issue was created if the tool or repository access was not verified.
+Never pretend an issue was created or placed on a project if the tool or repository access was not verified.
 
 Bundle findings like this:
 - one `Should fix` issue containing all deduplicated `Should fix` findings
@@ -280,7 +282,6 @@ Skip this step if:
 
 Before creating a follow-up issue:
 - verify `gh auth status` succeeds
-- verify the token has the `project` scope or can access project operations
 - verify the repository context is correct
 - check for obvious duplicates in existing issue references when available
 - skip issue creation for feedback that is already tracked
@@ -288,15 +289,19 @@ Before creating a follow-up issue:
 When creating the issue, apply the priority label from the mapping:
 `gh issue create --label priority:high` (or `priority:medium` / `priority:low`).
 
-For this repository's project placement:
-- target `https://github.com/orgs/Artistfy/projects/2` (Artistfy Dashboard)
-- use `gh project field-list 2 --owner Artistfy --format json` to find the `Status` field and option IDs
-- use `gh project item-add 2 --owner Artistfy --url <issue-url>` to add the created issue to the project
+Project placement is conditional. Only attempt it when the repo has
+opted in via `.github/review-triage.yml`. If the file is absent or
+malformed, do not place the issue on any project.
+
+When the repo has a valid config file:
+- verify the token has the `project` scope or can access project operations; if not, treat that as a real failure (see output format below)
+- use `gh project field-list <number> --owner <owner> --format json` to find the `Status` field and option IDs
+- use `gh project item-add <number> --owner <owner> --url <issue-url>` to add the created issue to the project
 - use `gh project item-edit --id <item-id> --project-id <project-id> --field-id <status-field-id> --single-select-option-id <option-id>` to set the lane
-- use the default lane mapping unless the user says otherwise: `Should fix` -> `Next`, `Nice to have` -> `Todo`, `Nit` -> `Todo`
-- project 2 has no `Priority` field; rely on the issue label instead
-- if the project or lane cannot be verified, still create the issue when possible but state that placement did not happen
-- if `gh` auth or project access fails, output drafts and note the missing capability instead of claiming success
+- use the lane mapping from the config file, falling back to the default mapping (`Should fix` -> `Next`, `Nice to have` -> `Todo`, `Nit` -> `Todo`) for any severities the file does not specify
+- not every project board exposes a `Priority` field; always rely on the issue label for priority
+- if the project or lane cannot be verified, still create the issue but report that placement did not happen and **why**
+- if `gh` auth fails entirely, output drafts and note the missing capability instead of claiming success
 
 Each follow-up issue should include:
 - title
@@ -307,6 +312,51 @@ Each follow-up issue should include:
 - checklist of included findings
 - why the bucket matters
 - suggested implementation scope
+
+## Project Placement Configuration
+
+Project placement is opt-in per repository. The skill looks for a config file
+at one of:
+
+- `.github/review-triage.yml`
+- `.github/review-triage.yaml`
+
+If neither file exists, no project placement is attempted and the output
+reports it as informational (not a failure).
+
+### Schema
+
+```yaml
+project:
+  owner: <github-org-or-user>   # required
+  number: <project-number>      # required, integer
+  lanes:                        # optional
+    should-fix: <lane-name>
+    nice-to-have: <lane-name>
+    nit: <lane-name>
+```
+
+Rules:
+- `project.owner` and `project.number` are required for placement to happen.
+- `project.lanes` is optional. Any severity not listed falls back to the default lane mapping in "Priority Mapping".
+- Lane names must match Status option labels on the target project exactly.
+- If the file is present but malformed, missing required fields, or otherwise unusable, treat it as if the file did not exist and emit an informational note that mentions parsing failed.
+
+### Non-normative example
+
+A repo that wants follow-up issues placed on org `Artistfy`'s project number 2
+would commit this file (this is an example only; nothing about Artistfy or
+project 2 is a default):
+
+```yaml
+project:
+  owner: Artistfy
+  number: 2
+  lanes:
+    should-fix: Next
+    nice-to-have: Todo
+    nit: Todo
+```
 
 ## Output Format
 
@@ -355,8 +405,25 @@ For follow-up work:
   Includes:
   - first finding
   - second finding
-  Project placement: `Next`
+  Project placement: `Next` on <owner>/projects/<number>
 ```
+
+Project placement reporting must distinguish the two skip cases:
+
+```md
+### Project Placement
+- No project placement configured for this repo (.github/review-triage.yml absent)
+```
+
+```md
+### Project Placement
+- Configured target: <owner>/projects/<number>
+- Placement failed: <reason, e.g. "gh token missing `project` scope">
+```
+
+Do not collapse these two cases into a single "skipped" line. The first is
+informational (the repo opted out by default), the second is a real failure
+that the user may want to act on.
 
 Or, when creation is unavailable:
 
@@ -399,18 +466,27 @@ Or, when creation is unavailable:
 
 Use the GitHub CLI for private repository follow-up handling.
 
-Typical sequence:
+Typical sequence (placeholders `<owner>` and `<number>` come from the repo's
+`.github/review-triage.yml`; the project commands run only when the repo has
+opted in):
 
 ```bash
 gh auth status
 gh pr view <pr-number> --json headRefOid,comments,commits,reviews
 gh issue create --repo <owner/repo> --title "..." --body "..." --label priority:high
-gh project field-list 2 --owner Artistfy --format json
-gh project item-add 2 --owner Artistfy --url <issue-url>
+# Project commands below: only when .github/review-triage.yml is present.
+gh project field-list <number> --owner <owner> --format json
+gh project item-add <number> --owner <owner> --url <issue-url>
 gh project item-edit --id <item-id> --project-id <project-id> --field-id <status-field-id> --single-select-option-id <option-id>
 ```
 
-If `gh auth status` fails or the token is missing `project` access, do not attempt partial project automation. Produce follow-up issue drafts instead.
+If `gh auth status` fails entirely, do not attempt issue creation; produce
+follow-up issue drafts instead.
+
+If the repo has opted in to project placement but the token is missing
+`project` scope, still create the labeled issue, then report the placement
+failure under "Project Placement" with the real reason (missing scope) — do
+not silently skip.
 
 ## Example Invocation
 
@@ -479,3 +555,7 @@ Notes on the triage:
   the merge → `Should fix`, bundled alone (its own issue).
 - Comments 2 and 4 are taste / minor polish → `Nit`, bundled into one issue.
 - Nothing here justifies `Nice to have`, so that bucket is omitted.
+- "Suggested project placement" in the drafts is advisory only. It would be
+  applied to an actual project board only if the repo has opted in via
+  `.github/review-triage.yml`; otherwise the issues would be created with
+  priority labels and reported under "No project placement configured".
