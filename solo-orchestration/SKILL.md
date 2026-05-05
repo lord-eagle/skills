@@ -134,6 +134,76 @@ Do NOT:
 - Forget `close_process` — orphaned pids accumulate
 - Seed spawn with `orch_pid` but omit `orch_project_id` — callback silently misroutes when projects differ
 
+## Multi-Vendor Preflight
+
+Spawning a non-Claude runtime (Codex, Gemini, Amp, OpenCode) only works if that runtime has Solo MCP wired into its own config. Solo does NOT auto-inject. Without the wiring, the spawned agent has no `whoami` / `scratchpad_write` tools and cannot follow any reporting contract.
+
+Run this preflight **once at the start of any multi-agent workflow**. It is the single source of truth for "which vendors can actually participate right now". Downstream skills (e.g. `solo-multi-agent-brainstorm`) MUST consume its output instead of building their own probe.
+
+### What the preflight does
+
+```
+1. enabled = list_agent_tools()                         # Solo's own truth
+2. For each tool: check vendor's user-config file for an `solo` MCP entry
+3. If entry missing: patch idempotently (backup file as .bak-<unix-ts> first)
+4. Health probe in parallel — spawn each, send minimal "whoami + scratchpad_write probe-{vendor}-{ts} + close"
+   timeout 30s per vendor (Claude needs >20s on cold boot)
+5. Classify each vendor:
+     OK            → ready to use
+     NEEDS_AUTH    → CLI booted but blocked on interactive auth screen (Gemini, Amp)
+     CLI_MISSING   → CLI binary not on Solo's subshell PATH (Solo runs nvm-managed shell)
+     BOOT_LOOP     → CLI exits before accepting input (e.g. self-update on first run)
+     MCP_MISSING   → MCP entry patched but agent still cannot resolve solo tools
+     SUBMIT_BUG    → CLI accepts text but never executes (Codex needed raw CR `[13]`)
+6. Archive probe scratchpads. Return: [(tool_id, name, status, hint)]
+```
+
+The downstream skill picks vendors with `status == OK`. Anything else is surfaced to the user with the install/auth hint and excluded.
+
+### Vendor config registry
+
+Solo MCP binary path: `/Applications/Solo.app/Contents/MacOS/mcp` (on macOS). Use the absolute path in every vendor config — none of these CLIs resolve `solo` from PATH the same way Claude does.
+
+| Vendor | Config file | Format | MCP entry shape |
+|--------|-------------|--------|-----------------|
+| Claude | `~/.claude.json` | JSON | `mcpServers.solo = {type:"stdio", command:"<solo-mcp>", args:[], env:{}}` (Solo writes this on first install — usually already present) |
+| Codex | `~/.codex/config.toml` | TOML | `[mcp_servers.solo]\ncommand = "<solo-mcp>"\nargs = []` |
+| Gemini | `~/.gemini/settings.json` | JSON | `mcpServers.solo = {command:"<solo-mcp>", args:[]}` |
+| Amp | `~/.amp/settings.json` (TBD — verify on first probe) | JSON | TBD |
+| OpenCode | `~/.config/opencode/config.json` (TBD — verify on first probe) | JSON | TBD |
+
+Marked TBD = not yet validated end-to-end. First time a probe classifies one as `MCP_MISSING`, capture the working format and add it here. Do NOT guess.
+
+### Idempotency rules for the patch step
+
+- Read existing config first. If `solo` MCP entry already present with matching command path → skip, do not rewrite.
+- Backup before any write: copy to `<file>.bak-<unix-ts>` (millisecond precision unnecessary).
+- Use vendor-native config tooling where it exists. Otherwise hand-edit with surgical `Edit`/`Write` — never overwrite the whole config blindly, you will lose unrelated user settings.
+- After write, re-read and parse to confirm valid syntax (TOML / JSON). Roll back from backup on parse failure.
+
+### What preflight must NOT do
+
+- **No auto-install of CLIs.** If `gemini` is not on PATH, surface an install hint (`npm i -g @google/gemini-cli`) and mark `CLI_MISSING`. Installing software without consent is out of scope.
+- **No interactive auth flows.** Gemini's first-run "Sign in with Google / API key / Vertex" dialog is interactive and cannot be driven from a probe. Mark `NEEDS_AUTH` and tell the user to run `gemini` once manually.
+- **No Trust-Folder dialog clicks.** Same reason. Hint user to set `trust_level = "trusted"` in vendor config (Codex), or accept the dialog interactively.
+- **No new vendor registration in Solo's `list_agent_tools` registry.** That is a Solo-app concern.
+
+### Footguns
+
+- **Solo subshell uses nvm-managed Node (not your default).** A CLI installed under Node 20 is invisible to a Solo spawn that boots Node 23. Install global CLIs under the same Node version Solo uses (check `nvm current` inside a Solo terminal spawn).
+- **First-run self-updates kill the process.** Codex `npm install -g` on boot, exits with "Please restart Codex". Always run a warm-up spawn (close it, spawn again) before classifying. The 2nd spawn is the real probe.
+- **`send_input` text not always submitted.** Some TUIs swallow `\n`. Probe success means "the prompt actually executed", not "bytes were sent". Verify via `get_process_output` looking for tool-call evidence. Codex specifically may need a raw CR (`bytes=[13]`) follow-up.
+- **MCP entry can be syntactically present but unloadable** (wrong path, wrong format, wrong field name per vendor). The probe's `whoami` call is the only ground-truth health check.
+- **Probe scratchpads accumulate.** Always archive on probe exit. Tag `probe-multivendor`.
+
+### Skipping the preflight
+
+You may skip when:
+- Workflow is single-vendor (Claude only) AND Solo's bundled Claude wiring is known-good
+- You already ran preflight in the same orchestrator session and no vendor configs changed since
+
+Otherwise: run it. The cost (~30s warm, ~60s cold) is paid back on the first prevented mid-flight stall.
+
 ## When To Skip This Skill
 
 - Single orchestrator session, no spawns
@@ -152,3 +222,5 @@ Do NOT:
 | Wait for first done | `timer_fire_when_idle_any` |
 | Progress visibility mid-task | scratchpad_append |
 | Terminal event signal | send_input to orch_pid |
+| Multi-vendor workflow startup | Multi-Vendor Preflight (this skill) |
+| Vendor config formats / Solo MCP entry shapes | Vendor config registry table above |
