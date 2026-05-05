@@ -32,12 +32,14 @@ Cost reality: 3 panelists × 3 rounds ≈ 9-12 LLM calls + orchestrator synthesi
 
 Mode is runtime decision based on topic. Default to `hybrid`.
 
-## v1 Scope
+## v1.2 Scope
 
 In:
 - All three modes
 - Project selection: `list_projects()` → suggest → user confirm
-- Fixed agent runtime — prefer Claude (`agent_tool_id` for `tool_type=="claude"`) for all panelists; only fall back to first-available if no Claude registered. Reason: only Claude reliably runs with `--dangerously-skip-permissions` so scratchpad writes don't prompt; other runtimes may stall silently. v2 will add per-persona runtime assignment.
+- **Multi-vendor panel by default**: panelists can run on Claude, Codex, Gemini, Amp, OpenCode — whichever the host has wired. Vendor selection is delegated to `solo-orchestration` Multi-Vendor Preflight (no probing logic in this skill).
+- Per-role runtime assignment via the matrix below (architect → strongest reasoning, contrarian → minority vendor for divergence, pragmatist → fast vendor)
+- Echo-chamber warning when preflight returns <2 OK vendors
 - Round protocol with synthesis + convergence detection
 - Final verdict archived to orchestrator-project scratchpad
 - Read-only enforcement + secret-leak guard in panelist seed
@@ -45,10 +47,39 @@ In:
 - Per-panelist idle-timer registration (one timer per panelist, scoped to its own project — see Cross-Project Timer Caveat below)
 
 Deferred:
-- Runtime-aware assignment (v2 — see `lord-eagle/skills` issue #2)
-- `NEED_PANELIST` mid-flight requests (v2)
+- `NEED_PANELIST` mid-flight requests (v2 Feature B — issue #2)
 - Orchestrator context handoff (v3 — issue #3)
 - Recursive sub-panelists (forbidden permanently)
+
+## Vendor Assignment Matrix
+
+The `solo-orchestration` Multi-Vendor Preflight returns a list of OK vendors. This skill maps roles to vendors using the matrix below. If a desired vendor is not in the OK list, fall back to the next entry in the row.
+
+| Role | Preference (left → right fallback) | Reason |
+|------|------------------------------------|--------|
+| architect / long-term reasoning | Claude (Opus) → Claude (Sonnet) → Codex (gpt-5.5) → first OK | Strongest cross-file reasoning, lowest hallucination on architecture |
+| pragmatist / ship-now | Claude (Haiku) → Codex → Gemini → first OK | Fast turnaround, cheap |
+| contrarian | Force a vendor **different** from the majority. Pick first OK vendor whose `tool_type` ≠ majority. If no diversity available → assign Claude with persona "contrarian" + emit echo-chamber warning. | Cross-vendor disagreement is the main hedge against correlated bias |
+| codebase-grounded (cross-project) | Claude → Codex → first OK | Strongest local-repo tooling integration |
+| user-advocate / skeptic | Any OK vendor | Persona drives output more than vendor here |
+
+Rules:
+- Resolve the assignment after preflight, not before. Preflight is the source of truth.
+- Skip any vendor with `status != OK`. Use the hint to inform the user once, then move on.
+- If ≥2 distinct `tool_type` available → vendor mix is "real". If only one → mark panel as **single-vendor** in the verdict diversity assessment.
+- Format-drift mitigation: enforce strict `POSITION / TOP_RISK / DELTA` template across all vendors. Validate parsing on every callback. Log + retry once if parse fails.
+
+## Echo-Chamber Warning
+
+Surfaced **upfront** (before spawn) and **archived** (in verdict Provenance & Usage block) when:
+- Preflight returns `<2` OK vendors, OR
+- All assigned panelists end up on the same `tool_type` after fallback resolution.
+
+Wording (verbatim, do not paraphrase):
+
+> **Echo chamber risk:** all panelists run on `{vendor}`. Convergence may overstate consensus. Recommended: run preflight again after wiring a second vendor, or accept and proceed with persona-only diversity.
+
+User confirms before spawn.
 
 ## Defaults
 
@@ -169,14 +200,25 @@ me = whoami()
 ORCH_PID = me.process_id
 ORCH_PROJECT_ID = me.project_id
 
-agents = list_agent_tools()
-# Prefer Claude (only runtime that reliably has --dangerously-skip-permissions);
-# fall back to first-available if no Claude registered.
-AGENT_ID = next((a.id for a in agents if a.tool_type == "claude"), agents[0].id)
+# Delegate vendor discovery + health check to solo-orchestration Multi-Vendor Preflight.
+# Returns: [(tool_id, name, tool_type, status, hint)] — only status=="OK" is usable.
+preflight = run_multi_vendor_preflight()  # see solo-orchestration SKILL.md
+ok_vendors = [v for v in preflight if v.status == "OK"]
+report_skipped_vendors_to_user([v for v in preflight if v.status != "OK"])
+
+if len(ok_vendors) == 0:
+    abort("No usable agent runtime. See preflight hints.")
+if len({v.tool_type for v in ok_vendors}) < 2:
+    confirm_echo_chamber_warning_with_user(ok_vendors)
 
 # 2. Resolve panel composition
 projects = list_projects()
 panel_plan = build_panel(topic, mode, projects)  # see Cross-Project Lens Selection
+
+# Assign vendor per role using the Vendor Assignment Matrix.
+# entry.role drives the lookup; matrix returns the first OK vendor for that role.
+for entry in panel_plan:
+    entry.agent_tool_id = pick_vendor_for_role(entry.role, ok_vendors)
 confirm_with_user(panel_plan)
 
 # 3. Spawn panelists
@@ -184,7 +226,7 @@ panel = []  # list of (pid, project_id, label, lens, gh_repo_hint)
 for entry in panel_plan:
     r = spawn_process(
         kind="agent",
-        agent_tool_id=AGENT_ID,
+        agent_tool_id=entry.agent_tool_id,  # set by Vendor Assignment Matrix
         name=f"panelist-{entry.label}",
         project_id=entry.project_id,
     )
@@ -389,6 +431,8 @@ Do NOT:
 - Skip convergence check and loop to MAX_ROUNDS by default — wasted tokens
 - Forget `close_process` per panelist + scratchpad archive on exit — pid + storage leak
 - Mix orchestrator-project scratchpad writes from panelists without `project_id=ORCH_PROJECT_ID` — silently lost
+- Spawn a panelist on a vendor that the preflight did not return as `OK` — Solo MCP tools may be missing in that runtime; panelist cannot follow the reporting contract
+- Build your own vendor probe inside this skill — duplicates `solo-orchestration` Multi-Vendor Preflight; drift will silently diverge
 
 ## When To Skip This Skill
 
@@ -410,8 +454,9 @@ Do NOT:
 | Need | Action |
 |------|--------|
 | Discover panelist projects | `list_projects()` |
-| Discover agent runtimes | `list_agent_tools()` — prefer `tool_type=="claude"`, fall back to first |
-| Spawn panelist in another project | `spawn_process(kind="agent", agent_tool_id=AGENT_ID, project_id=X)` |
+| Discover usable agent runtimes | Multi-Vendor Preflight in `solo-orchestration` (returns OK vendors only) |
+| Pick vendor for a role | Vendor Assignment Matrix (this skill, above) |
+| Spawn panelist in another project | `spawn_process(kind="agent", agent_tool_id=entry.agent_tool_id, project_id=X)` |
 | Verify seed delivered | `get_process_output(pid, project_id=panel_project_id, lines=20)`, look for "REPORTING CONTRACT" |
 | Dispatch round | `send_input(pid, project_id=panel_project_id, input=ROUND_TEMPLATE)` |
 | Wait for round complete | One `timer_fire_when_idle_all(processes=[pid], project_id=panel_project_id, ...)` per panelist |
@@ -421,6 +466,16 @@ Do NOT:
 | Tear down panelist | `scratchpad_archive(scratchpad_id=pad.id, ...)` per round pad + `close_process(pid, project_id=panel_project_id)` |
 
 ## Changelog
+
+### v1.2 (2026-05-05, multi-vendor enabled)
+
+- **Multi-vendor brainstorm is now default**, not deferred. Panelists can run on Claude, Codex, Gemini, Amp, OpenCode — whichever the host has wired and probed OK.
+- **Vendor discovery delegated** to `solo-orchestration` Multi-Vendor Preflight. This skill no longer probes runtimes itself.
+- **Vendor Assignment Matrix** added: maps role (architect / pragmatist / contrarian / codebase-grounded / user-advocate) to a preference list of vendors with fallback.
+- **Echo-chamber warning** surfaced upfront (before spawn) and archived in verdict, when preflight returns <2 OK vendors or all assigned panelists end up on the same `tool_type`.
+- **Removed v1.1 hardcode** "prefer Claude as only runtime" — replaced with assignment matrix. Single-vendor still possible (echo-chamber warning will fire) but no longer the default.
+- **Footgun moved upstream**: the "non-Claude runtimes lack `--dangerously-skip-permissions` so scratchpad writes stall" assumption was a symptom of missing Solo MCP wiring in those runtimes' configs, not a permissions issue. Preflight now patches the configs idempotently. See `solo-orchestration` Multi-Vendor Preflight + Vendor config registry.
+- **Anti-Patterns**: added "spawn on non-OK vendor" + "build your own probe" entries.
 
 ### v1.1 (2026-04-25, post first live test)
 
