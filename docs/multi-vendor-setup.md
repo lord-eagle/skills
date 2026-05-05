@@ -162,6 +162,22 @@ spawn_process(kind="agent", agent_tool_id=<id>, project_id=<id>, name="probe")
 
 ---
 
+## Skipping interactive auth (env-var auth)
+
+If you'd rather not click through Gemini / Amp / OpenCode's first-run dialogs, set the vendor's API-key env var in your shell profile (`~/.zshrc`, `~/.bashrc`, etc.). Solo passes the host environment into spawned agents, so the CLI sees the credential and boots straight into the agent layer.
+
+```bash
+# ~/.zshrc — pick the vendors you actually use
+export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (rarely needed; Max sessions usually authed)
+export OPENAI_API_KEY="sk-..."          # Codex
+export GEMINI_API_KEY="..."             # Gemini  (or GOOGLE_API_KEY for Vertex)
+export AMP_API_KEY="..."                # Amp     (verify name on first success)
+```
+
+Reload your shell, then re-run preflight. Vendors that previously hit `NEEDS_AUTH` should reclassify to `OK`.
+
+If preflight still says `NEEDS_AUTH` after setting an env var, the vendor either uses a different variable name or requires an additional one-time interactive step (e.g. OpenCode `/connect` provider selection). Run the CLI once manually to find out, and please open a PR updating this doc with the working variable name.
+
 ## Footguns recap
 
 - **Wrong Node version.** Solo subshell uses nvm-managed Node (often Node 23). CLIs installed under your shell's default Node may be invisible. Use `nvm use 23` before `npm install -g`.

@@ -169,8 +169,8 @@ Solo MCP binary path: `/Applications/Solo.app/Contents/MacOS/mcp` (on macOS). Us
 | Claude | `~/.claude.json` | JSON | `mcpServers.solo = {type:"stdio", command:"<solo-mcp>", args:[], env:{}}` (Solo writes this on first install — usually already present) |
 | Codex | `~/.codex/config.toml` | TOML | `[mcp_servers.solo]\ncommand = "<solo-mcp>"\nargs = []` |
 | Gemini | `~/.gemini/settings.json` | JSON | `mcpServers.solo = {command:"<solo-mcp>", args:[]}` |
-| Amp | `~/.amp/settings.json` (TBD — verify on first probe) | JSON | TBD |
-| OpenCode | `~/.config/opencode/config.json` (TBD — verify on first probe) | JSON | TBD |
+| Amp | TBD (only created after interactive login — `amp` first-run blocks on `Would you like to log in?`) | TBD | TBD |
+| OpenCode | TBD (only created after `/connect` provider selection in TUI) | TBD | TBD |
 
 Marked TBD = not yet validated end-to-end. First time a probe classifies one as `MCP_MISSING`, capture the working format and add it here. Do NOT guess.
 
@@ -184,9 +184,63 @@ Marked TBD = not yet validated end-to-end. First time a probe classifies one as 
 ### What preflight must NOT do
 
 - **No auto-install of CLIs.** If `gemini` is not on PATH, surface an install hint (`npm i -g @google/gemini-cli`) and mark `CLI_MISSING`. Installing software without consent is out of scope.
-- **No interactive auth flows.** Gemini's first-run "Sign in with Google / API key / Vertex" dialog is interactive and cannot be driven from a probe. Mark `NEEDS_AUTH` and tell the user to run `gemini` once manually.
-- **No Trust-Folder dialog clicks.** Same reason. Hint user to set `trust_level = "trusted"` in vendor config (Codex), or accept the dialog interactively.
+- **No automated submission of credentials beyond reading user-provided env vars.** Preflight may read `GEMINI_API_KEY` from the host shell to inject into a spawn. Preflight must NOT prompt for a credential, fetch one, persist one, or send any string that could be a credential to a third party.
+- **No browser-based OAuth flows.** Cannot be driven from PTY. Mark `NEEDS_AUTH` and surface the manual command for the user to run.
+- **No Trust-Folder dialog clicks.** Hint user to set `trust_level = "trusted"` in vendor config (Codex), or accept the dialog interactively.
 - **No new vendor registration in Solo's `list_agent_tools` registry.** That is a Solo-app concern.
+
+### Auth strategies (Tier A + Tier C)
+
+Several runtimes (Gemini, Amp, OpenCode) sit on an interactive auth prompt on first run. There is no agent layer running yet, so the spawned process cannot call `send_input` back to the orchestrator — the agent literally does not exist until auth completes. Preflight handles this with two complementary tiers.
+
+#### Tier A — Env-var auth (preferred)
+
+When the user has set the vendor's API-key env var in their shell profile, Solo injects it into the spawn via the agent-tool's `env` block (configured once per vendor in Solo's tool registry, not per spawn). The CLI sees the credential, skips the auth prompt, boots straight into the agent layer.
+
+Known env-var registry:
+
+| Vendor | Env var | Effect |
+|--------|---------|--------|
+| Claude | `ANTHROPIC_API_KEY` (rare; usually CLI auths via Claude Max session) | Skips browser-OAuth on first run |
+| Codex | `OPENAI_API_KEY` (optional; CLI also supports per-account login) | Skips OpenAI login dialog |
+| Gemini | `GEMINI_API_KEY` (or `GOOGLE_API_KEY` for Vertex) | Skips "Sign in with Google / API Key / Vertex" picker |
+| Amp | `AMP_API_KEY` (verify on first successful spawn) | Skips `Would you like to log in?` prompt |
+| OpenCode | Provider-specific (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) | May still require `/connect` once; verify per provider |
+
+Add new entries to this table as preflight observations confirm them. Do not guess — credential env-var names vary per vendor and version.
+
+The user's responsibility: set the env var. Preflight's responsibility: read and surface in the spawn. Neither party persists credentials in the skill repo.
+
+#### Tier C — Detect-and-pause (fallback)
+
+When env-var auth is not in play (user has not set it, or the prompt is not env-var-skippable), the spawned CLI sits at an interactive prompt. Preflight detects this and surfaces a precise hint instead of timing out generically.
+
+Detect-pattern registry (sampled from real first-run output):
+
+```
+AUTH_PATTERNS = {
+  "amp":      ["Would you like to log in to Amp"],
+  "opencode": ["Run /connect to add an AI provider"],
+  "gemini":   ["How would you like to authenticate", "Trust folder"],
+  "codex":    ["Sign in with ChatGPT", "Authenticate with OpenAI"],
+}
+```
+
+Preflight calls `get_process_output(pid, lines=80)` once after the boot wait. If output matches a known pattern → classify `NEEDS_AUTH` and surface:
+
+> **NEEDS_AUTH:** `{vendor}` boot is blocked on `"<matched pattern>"`. Run `{vendor}` once manually in a terminal to complete the prompt, then re-run the multi-agent workflow. Or set `{env_var}` in your shell profile to skip the prompt entirely.
+
+Tier C is fail-safe — even if a vendor's prompt text changes and no pattern matches, the probe simply times out and the vendor is classified as `BOOT_LOOP` or `MCP_MISSING` rather than silently corrupting the run. Pattern-based detection just makes the user-facing message specific.
+
+#### What preflight does NOT do (Tier B explicitly excluded)
+
+Scripted TUI navigation — sending `y\n` to confirm a login prompt, picking option 2 from a menu, typing an API token in response to a string match — is **out of scope**. Reasons:
+
+- TUI strings change vendor-side without warning → brittle
+- Sending tokens via `send_input` puts them in scratchpad-adjacent telemetry → security regression
+- Browser-OAuth flows cannot be scripted at all
+
+If a user wants this they can set the env var (Tier A) or complete auth manually (Tier C).
 
 ### Footguns
 
