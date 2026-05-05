@@ -92,17 +92,31 @@ Pick one and complete the flow. After that, Gemini panelist spawns can run non-i
 
 Set `GEMINI_API_KEY` in your shell profile if you prefer API-key auth — skips the picker entirely.
 
-### Amp (TBD)
+### Amp (config TBD; auth required first)
 
-File: TBD — likely `~/.amp/settings.json`. Format not yet validated end-to-end.
+Install:
 
-When you successfully wire Amp, please open a PR updating this section.
+```bash
+nvm use 23
+npm install -g @sourcegraph/amp
+```
 
-### OpenCode (TBD)
+**First-run interactive:** spawning Amp without prior auth shows `Would you like to log in to Amp? [(y)es, (n)o]` and blocks. Run `amp` once manually and complete the login before treating it as a panelist runtime.
 
-File: TBD — likely `~/.config/opencode/config.json`. Format not yet validated end-to-end.
+Config file location: not yet validated end-to-end (Amp does not create config files until after first interactive login). When you have completed auth and located the settings file, please open a PR adding the `mcp_servers.solo` entry shape here.
 
-Same — PR welcome once verified.
+### OpenCode (config TBD; provider connection required first)
+
+Install:
+
+```bash
+nvm use 23
+npm install -g opencode-ai
+```
+
+**First-run interactive:** spawning OpenCode shows the TUI with a hint `Run /connect to add an AI provider and start coding` and waits for a provider selection. Run `opencode` once manually, run `/connect`, pick + authenticate against your provider.
+
+Config file location: not yet validated end-to-end. Probable candidates: `~/.config/opencode/config.json` or `~/.opencode/`. PR welcome with the working snippet once verified.
 
 ---
 

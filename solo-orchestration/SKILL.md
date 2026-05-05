@@ -169,8 +169,8 @@ Solo MCP binary path: `/Applications/Solo.app/Contents/MacOS/mcp` (on macOS). Us
 | Claude | `~/.claude.json` | JSON | `mcpServers.solo = {type:"stdio", command:"<solo-mcp>", args:[], env:{}}` (Solo writes this on first install — usually already present) |
 | Codex | `~/.codex/config.toml` | TOML | `[mcp_servers.solo]\ncommand = "<solo-mcp>"\nargs = []` |
 | Gemini | `~/.gemini/settings.json` | JSON | `mcpServers.solo = {command:"<solo-mcp>", args:[]}` |
-| Amp | `~/.amp/settings.json` (TBD — verify on first probe) | JSON | TBD |
-| OpenCode | `~/.config/opencode/config.json` (TBD — verify on first probe) | JSON | TBD |
+| Amp | TBD (only created after interactive login — `amp` first-run blocks on `Would you like to log in?`) | TBD | TBD |
+| OpenCode | TBD (only created after `/connect` provider selection in TUI) | TBD | TBD |
 
 Marked TBD = not yet validated end-to-end. First time a probe classifies one as `MCP_MISSING`, capture the working format and add it here. Do NOT guess.
 
