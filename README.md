@@ -1,12 +1,20 @@
 # lord-eagle/skills
 
-Skills for [Solo MCP](https://github.com/sublayerapp/solo) — multi-agent orchestration that actually works.
+Public skill collection. Two themes:
+
+1. **Solo MCP multi-agent orchestration** — `solo-orchestration` and `solo-multi-agent-brainstorm`. Built on [Solo MCP](https://github.com/sublayerapp/solo).
+2. **GitHub PR review tooling** — `review-triage`. Independent skill, no Solo dependency.
 
 ## What's inside
 
+### Solo multi-agent skills
+
 - **`solo-multi-agent-brainstorm`** — Run a moderated panel of 3 AI agents on a hard decision. Mix vendors (Claude, Codex, Gemini, …) for cross-vendor disagreement. Get a synthesized verdict instead of a single-LLM hot take.
 - **`solo-orchestration`** — Foundation library for any Solo multi-agent workflow. Push-based reporting (no polling), cross-project scoping, multi-vendor preflight that wires Solo MCP into Codex/Gemini/Amp/OpenCode configs.
-- **`review-triage`** — Triage GitHub PR review feedback into Must fix / Should fix / Nice to have / Nit; bundles non-blocking findings into one issue per severity.
+
+### Standalone skills
+
+- **`review-triage`** — Triage GitHub PR review feedback into Must fix / Should fix / Nice to have / Nit; bundles non-blocking findings into one issue per severity. **Not Solo-specific** — works on any GitHub repo with `gh` CLI access. Project board placement is opt-in per repo via `.github/review-triage.yml`; without that file, issues are created with priority labels and no project placement.
 
 ## What you get from a multi-agent brainstorm
 
@@ -59,7 +67,7 @@ The skill picks up: `solo-multi-agent-brainstorm` runs preflight, spawns Claude 
 
 - `solo-orchestration` — v1.2 (multi-vendor preflight added 2026-05-05)
 - `solo-multi-agent-brainstorm` — v1.2 (multi-vendor enabled 2026-05-05)
-- `review-triage` — v1.x
+- `review-triage` — generic GitHub-PR tooling, opt-in project placement via `.github/review-triage.yml`
 
 Active development. Open issues track planned work:
 - Mid-flight panel growth (`NEED_PANELIST`) — issue #2 Feature B
