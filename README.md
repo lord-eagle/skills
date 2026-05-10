@@ -1,9 +1,10 @@
 # lord-eagle/skills
 
-Public skill collection. Two themes:
+Public skill collection. Three themes:
 
 1. **Solo MCP multi-agent orchestration** — `solo-orchestration` and `solo-multi-agent-brainstorm`. Built on [Solo MCP](https://github.com/sublayerapp/solo).
 2. **GitHub PR review tooling** — `review-triage`. Independent skill, no Solo dependency.
+3. **Editorial cleanup of marketing pages** — `reduce-to-max`. Audits a running website for information overload and proposes editorial cuts.
 
 ## What's inside
 
@@ -15,6 +16,7 @@ Public skill collection. Two themes:
 ### Standalone skills
 
 - **`review-triage`** — Triage GitHub PR review feedback into Must fix / Should fix / Nice to have / Nit; bundles non-blocking findings into one issue per severity. **Not Solo-specific** — works on any GitHub repo with `gh` CLI access. Project board placement is opt-in per repo via `.github/review-triage.yml`; without that file, issues are created with priority labels and no project placement.
+- **`reduce-to-max`** — Audit a running website for information overload, redundant sections, and comprehension gaps. Recommends or applies editorial cuts so each page does its one job with the minimum sections and words required. Markdown-first skill with `dev-browser` helpers for section extraction, page-level metrics, content scanning, route discovery, and live browser overlay during apply mode.
 
 ## What you get from a multi-agent brainstorm
 
@@ -68,6 +70,7 @@ The skill picks up: `solo-multi-agent-brainstorm` runs preflight, spawns Claude 
 - `solo-orchestration` — v1.2 (multi-vendor preflight added 2026-05-05)
 - `solo-multi-agent-brainstorm` — v1.2 (multi-vendor enabled 2026-05-05)
 - `review-triage` — generic GitHub-PR tooling, opt-in project placement via `.github/review-triage.yml`
+- `reduce-to-max` — v0.7 (route discovery added 2026-05-10)
 
 Active development. Open issues track planned work:
 - Mid-flight panel growth (`NEED_PANELIST`) — issue #2 Feature B
@@ -85,6 +88,13 @@ Active development. Open issues track planned work:
 │   ├── SKILL.md
 │   └── versions/
 ├── review-triage/
+├── reduce-to-max/                # editorial cleanup skill
+│   ├── SKILL.md
+│   ├── principles/               # rule definitions (C, X, TS, CL, MO, DC, HI, F)
+│   ├── workflows/                # per-phase workflow modules
+│   ├── scripts/                  # dev-browser helpers
+│   ├── evals/                    # expected-findings fixtures
+│   └── references/               # citations
 └── docs/
     └── multi-vendor-setup.md   # per-vendor MCP wiring
 ```
