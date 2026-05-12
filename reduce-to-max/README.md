@@ -37,7 +37,3 @@ The skill is auto-discovered when placed at `~/.claude/skills/reduce-to-max/`. N
 | Audit   | Browse, analyze, report. No edits.                                        |
 | Propose | Audit + generate diffs. User reviews each diff before any write.          |
 | Apply   | Audit + edit files directly. Requires clean git tree (or override) and a branch. |
-
-## Source spec
-
-Design lives in `gaze-website/docs/superpowers/specs/2026-05-09-reduce-to-max-skill-design.md`.
