@@ -48,7 +48,21 @@ Even if the user's trigger phrase implied a mode, ask explicitly:
 
 > "Mode? **Audit** (analyze and report only), **Propose** (audit and produce diffs you review before any write), or **Apply** (audit and edit files; you review the resulting diff)?"
 
-Record the choice in the run state. Audit-mode runs may skip P2/P3 only if the user explicitly opts out and the working tree is clean. Propose and Apply always run P2 and P3.
+### Scope-aware mode options (multi-route)
+
+The mode menu MUST be built from the actual route list in run-state, not a hardcoded homepage default. After route discovery, read the kept route list from run-state:
+
+- **If the user kept N > 1 routes**, the menu MUST offer, as first-class options:
+  - **Apply across all kept routes** (`<route1>, <route2>, … <routeN>`)
+  - **Propose across all kept routes** (same list)
+  - **Audit across all kept routes**
+
+  Homepage-only (`/` only) is still offered, but **only as a deliberate narrowing path** ("just the homepage instead of all N"), never as the sole Apply/Propose option. The controller MUST NOT present a menu whose only Apply/Propose target is `/` when run-state holds N > 1 kept routes.
+- **If the user kept exactly 1 route**, present that single route as the scope.
+
+Echo the exact route list back in the prompt so the user sees the scope they are choosing.
+
+Record both the chosen mode and the chosen route scope in the run state. Audit-mode runs may skip P2/P3 only if the user explicitly opts out and the working tree is clean. Propose and Apply always run P2 and P3.
 
 ## Step P5 — Scope confirmation (multi-route)
 
