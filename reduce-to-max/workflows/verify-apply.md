@@ -55,6 +55,15 @@ verify-apply HALT — N findings did not apply cleanly:
   Action:   re-run apply with finer file:line targeting
 ```
 
+The HALT report MUST also include the raw `scan-content.js` re-scan diff per route — claimed cuts vs. what the post-apply re-scan actually shows still present — so the apply-fidelity gap (cuts the controller claimed but that never landed in source) is explicit:
+
+```
+scan-content.js re-scan diff — /admin/cms-products
+  claimed cut: internal_leaks[2] "TODO: wire CMS" → STILL PRESENT (home.blade.php:61)
+  claimed cut: metaphor_hits[0] "Sheet 01/05"     → STILL PRESENT (home.blade.php:140)
+  landed:      internal_leaks[0] "debug=true"     → gone (confirmed)
+```
+
 Do not proceed to AP5. The user decides whether to:
 - Manually fix the listed regressions, then mark verified.
 - Run apply mode again on the regressions only.
