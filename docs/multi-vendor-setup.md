@@ -1,5 +1,32 @@
 # Multi-Vendor Setup for Solo Brainstorm Panels
 
+## Do you actually need this?
+
+Read this before following any setup step below.
+
+```
+Are you spawning any non-Claude runtime (Codex / Gemini / Amp / OpenCode)?
+│
+├─ NO  → STOP. You need none of this.
+│        Solo auto-wires Solo MCP into Claude. Single-vendor panels and
+│        all push-based orchestration work out of the box. Close this doc.
+│
+└─ YES → Do you specifically want cross-vendor disagreement on a panel
+         (different model families arguing, not just more Claude agents)?
+         │
+         ├─ NO  → STOP. A single-vendor (Claude) panel is enough.
+         │        Multi-vendor adds setup cost and auth surface for no gain here.
+         │
+         └─ YES → Continue. The per-vendor setup below is for you.
+                  Prefer the automated path: let `solo-orchestration`'s
+                  Multi-Vendor Preflight patch configs (dry-run first).
+                  This manual doc is the fallback / reference.
+```
+
+Multi-vendor is a real capability worth having for high-stakes decisions — but it is **opt-in**, not a prerequisite for using these skills. The default Claude wiring covers the common case.
+
+---
+
 Solo's MCP server is auto-wired only into Claude. To run brainstorm panelists on Codex, Gemini, Amp, or OpenCode you need to:
 
 1. Install the runtime CLI (under the same Node version Solo's subshell uses)
@@ -142,14 +169,47 @@ If preflight returns fewer than 2 OK vendors, an **echo-chamber warning** is sur
 
 ---
 
-## Reset / debug
+## If something goes wrong
 
-Restore a vendor config from preflight backup:
+The preflight patches user-global config files. Every write is preceded by a timestamped backup, so any patch is reversible.
+
+### Per-vendor recovery one-liners
+
+Restore the most recent backup, then re-run preflight:
 
 ```bash
-ls ~/.codex/config.toml.bak-*  # pick the right timestamp
+# Codex
+cp "$(ls -t ~/.codex/config.toml.bak-* | head -1)" ~/.codex/config.toml
+
+# Gemini
+cp "$(ls -t ~/.gemini/settings.json.bak-* | head -1)" ~/.gemini/settings.json
+
+# Claude
+cp "$(ls -t ~/.claude.json.bak-* | head -1)" ~/.claude.json
+```
+
+To restore a *specific* timestamp instead of the newest, list and pick:
+
+```bash
+ls -t ~/.codex/config.toml.bak-*
 cp ~/.codex/config.toml.bak-1777968905 ~/.codex/config.toml
 ```
+
+### How to spot a corrupted config
+
+- The vendor CLI fails to boot, or errors on startup that referenced its config file → config likely has invalid TOML/JSON after a bad patch. Restore from backup.
+- Preflight (or a re-run) classifies the vendor as `MCP_MISSING` even though an `solo` entry is visibly present in the file → the entry is shaped wrong for the current vendor schema (see the "idempotency-vs-stale-key trap" in `solo-orchestration/SKILL.md`). The probe's `whoami` is ground truth, not file presence. Restore from backup, re-derive the correct entry shape from the vendor's docs, re-patch.
+- `whoami` works but `scratchpad_write` fails → not a config-corruption issue; that is an auth/permission problem, not a rollback case.
+
+### Backup retention policy
+
+Preflight keeps the **last 3** backups per config file. Older `.bak-<unix-ts>` files are auto-pruned at the start of the next preflight run (before the new backup is taken). If you want to keep a specific known-good backup permanently, copy it to a name without the `.bak-<ts>` pattern so the pruner ignores it.
+
+> **Security warning:** backup files are verbatim copies of your vendor configs. If you ever hand-added an API key or token to one of these configs, the `.bak-*` copies contain that secret too. Do **not** commit, share, or paste backup files. They are local-only. Delete stale ones if the configs ever held credentials.
+
+---
+
+## Reset / debug
 
 Probe a single vendor manually (assuming Solo MCP available):
 
