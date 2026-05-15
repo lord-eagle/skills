@@ -265,9 +265,40 @@ After a successful triage run, post the marker comment on the PR so future
 runs can early-exit while the head SHA is unchanged. Without this step, early
 exit can never trigger on subsequent runs.
 
+**The comment body IS the triage output, not a pointer to it.** The marker
+HTML comment goes on the first line; everything below it is the full "Output
+Format" structure (Confidence + coverage scope, Review Mode, Must Fixes,
+Merge Decision, Follow-Up Issues with links, Project Placement). Do NOT post a
+stub like "See summary above" — on a fresh triage there is no summary above;
+the PR has no other record of the result, so a stub strands reviewers.
+
 ```bash
-gh pr comment <pr-number> --body '<!-- review-triage:complete sha=<head-sha> mode=<fast-triage|deep-review> -->
-PR triage complete. See summary above.'
+gh pr comment <pr-number> --body "$(cat <<'EOF'
+<!-- review-triage:complete sha=<head-sha> mode=<fast-triage|deep-review> -->
+## Review Triage
+
+### Confidence
+- <High | Medium | Medium-low> — <on large/high-risk PRs, name which clusters were deep-reviewed vs skimmed>
+
+### Review Mode
+- <Reused valid marker | Fast triage | Deep review>
+
+### Must Fixes
+- [path:line] <summary> — Reason: <blocker>. Action: <required change>.
+  (or "None")
+
+### Merge Decision
+- <Blocked by N must fix(es) | No must fixes identified>
+
+### Follow-Up Issues
+- #<n> <title> (`Should fix`, priority:high) — <one-line scope>
+- #<n> <title> (`Nice to have`, priority:medium) — <one-line scope>
+- #<n> <title> (`Nit`, priority:low) — <one-line scope>
+
+### Project Placement
+- <No project placement configured for this repo (.github/review-triage.yml absent) | Configured target ... / Placement failed: ...>
+EOF
+)"
 ```
 
 Use `mode=deep-review` only when the run actually inspected the diff.
@@ -360,13 +391,17 @@ project:
 
 ## Output Format
 
-Use this structure:
+Use this structure. It is the **complete, canonical** output — every triage
+result (whether or not there are blockers) includes all six sections so the
+posted PR comment is complete by construction. Do not drop sections; use the
+"None" / "No ..." forms instead.
 
 ```md
 ## Review Triage
 
 ### Confidence
-- High | Medium | Medium-low
+- High | Medium | Medium-low — on large or high-risk PRs, name which clusters
+  were deep-reviewed vs skimmed (see Confidence rubric in Review Heuristics)
 
 ### Review Mode
 - Reused valid marker | Fast triage | Deep review
@@ -375,28 +410,27 @@ Use this structure:
 - [path/to/file:line] Summary
   Reason: concrete blocker
   Action: required change before merge
+  (use "- None" when there are no blockers)
 
 ### Merge Decision
-- Blocked by must fixes
+- Blocked by N must fix(es)   (or: No must fixes identified)
+
+### Follow-Up Issues
+- #123 Title (`Should fix`, priority: `high`) — one-line scope
+- #124 Title (`Nice to have`, priority: `medium`) — one-line scope
+- #125 Title (`Nit`, priority: `low`) — one-line scope
+  (use "- None" when there were no non-blocking findings;
+   use the Drafts form below when issue creation was unavailable)
+
+### Project Placement
+- No project placement configured for this repo (.github/review-triage.yml absent)
 ```
 
-If there are no blockers:
+For a blocked PR the Merge Decision reads `Blocked by N must fix(es)`; with no
+blockers it reads `No must fixes identified` and Must Fixes reads `- None`. The
+section list never changes.
 
-```md
-### Confidence
-- High | Medium | Medium-low
-
-### Review Mode
-- Reused valid marker | Fast triage | Deep review
-
-### Must Fixes
-- None
-
-### Merge Decision
-- No must fixes identified
-```
-
-For follow-up work:
+Detailed Follow-Up form (use when more than a one-liner per issue is useful):
 
 ```md
 ### Follow-Up Issues Created
@@ -458,6 +492,7 @@ Or, when creation is unavailable:
 - Use `Confidence: high` only for a valid current marker or a clearly complete deep review.
 - Use `Confidence: medium` for unchanged substantive review feedback that was triaged without new code review.
 - Use `Confidence: medium-low` when the result is based on partial sampling or when the PR is large and review coverage is limited.
+- On any large or high-risk PR, the Confidence line MUST state coverage scope: name which file clusters / risk areas were deep-reviewed and which were only skimmed or skipped. A bare "medium-low" without scope is incomplete — reviewers cannot judge what the triage missed.
 - If a finding is specific to CI or MVP discussions, mention that explicitly in the reasoning.
 - If a comment could block merge only under a specific assumption, state the assumption.
 - For follow-up work, prefer visibility over perfect organization. If the right lane is unclear, say so explicitly rather than silently dropping the issue into backlog.
