@@ -6,6 +6,14 @@ Active only when preflight resolved `mode: apply`. Runs after the audit and the 
 
 This step is **strict and sequential**. The controller MUST follow it as written.
 
+### Subagent self-check (run before anything else in AP1)
+
+Before producing any AP1 output, the controller (including any dispatched subagent) MUST answer this self-check:
+
+> "Am I about to render a multi-select checkbox UI, a 'pick which to apply' list, or any prompt presenting more than one finding at once? If yes, ABORT and re-read AP1.0. The loop is one finding at a time."
+
+If the answer is yes, the controller does not emit the UI. It re-reads AP1.0 and restarts the per-finding loop. This self-check is mandatory on every entry to AP1, including round 2+ re-audits.
+
 ## Step AP1.0 — Entry to apply mode
 
 Before entering the per-finding loop, the controller MUST NOT present a menu of pre-loop options that includes anything that skips, batches, or bypasses the loop. Specifically:
@@ -51,6 +59,17 @@ The controller MUST NOT:
 
 The bulk shortcut `[a]pply all critical` (described below) is the only exception, and it still uses the per-finding loop — it just auto-answers `y` for findings tagged CRITICAL.
 
+### Forbidden scope-punt phrasing
+
+Any rule defined in a `principles/*.md` file (C-rules, RA-rules, IA-rules, F-rules F1–F4, INTENT_DRIFT, etc.) is **in scope** for apply mode. The controller MUST NOT emit phrasing that defers an in-scope rule to a separate pass, including:
+
+- "out of skill scope; flag for separate X pass"
+- "this needs a dedicated accessibility pass"
+- "accessibility findings are handled separately"
+- Any wording that punts an F-rule (or any principles-defined rule) to a later/other pass instead of walking it per-finding.
+
+If the rule appears in any `principles/*.md` file, it is walked in the AP1 loop and applied in AP2 like every other finding.
+
 ### Required loop
 
 Loop over findings in priority order (CRITICAL → HIGH → MEDIUM → LOW). For each finding:
@@ -81,9 +100,11 @@ Loop over findings in priority order (CRITICAL → HIGH → MEDIUM → LOW). For
 
    For multi-route findings, the `anchor` selector is the one that resolves on the canonical route. The other routes are mentioned in the explain block text but not in the overlay.
 
-3. **Print the explain block** (format defined in `workflows/explain-finding.md`):
+3. **Print the explain block** (format defined in `workflows/explain-finding.md`). The block MUST begin with the literal per-finding framing line `Finding N of M (per-finding sequential walk per AP1)` (where `N` is the current finding's 1-based index and `M` is the total finding count) so every finding's output starts by reasserting the sequential walk:
 
    ```
+   Finding 1 of 7 (per-finding sequential walk per AP1)
+
    [CRITICAL · C2] aside.e2-index-card at resources/views/marketing/gaze.blade.php:31
 
    What I see: an `<ol class="e2-masthead-list">` with entries "01 · Cover · p.01" through "06 · Design partner · p.06".
@@ -122,7 +143,17 @@ Loop over findings in priority order (CRITICAL → HIGH → MEDIUM → LOW). For
    - Any finding whose recommendation is **merge** (the merge target is a judgment call).
    - Any finding whose "If applied" mentions copy rewriting that requires the user's voice.
 
-   The controller MUST mark exactly one option per prompt unless no condition is met. Failing to mark when the three conditions are met is a spec violation; the controller treats this as a self-check failure and re-prompts after marking.
+   ### Mandatory (Recommended) self-check (run before the prompt is rendered for each finding)
+
+   Before showing the prompt for **every** finding, the controller MUST run this explicit self-check and record the answer:
+
+   1. Is this finding **CRITICAL**? (includes `CRITICAL · INTENT_DRIFT`)
+   2. Is the recommendation **cut** / **cut dead code** / **rewrite-to-canonical** (not a judgment-call merge)?
+   3. Does "If applied" say **no information loss** OR **only dead/duplicate content removed**?
+
+   If all three are true, the prompt MUST be rendered with `[y]es (Recommended)`. This explicitly includes the `CRITICAL · INTENT_DRIFT` + cut-dead-code + no-information-loss case — that combination MUST be marked `(Recommended)`; it is not borderline and needs no user permission.
+
+   The controller MUST mark exactly one option per prompt unless no condition is met. Failing to mark when the three conditions are met is a spec violation. On detecting an unmarked prompt that should have been marked, the controller discards the rendered prompt and re-prompts with the visible prefix line `controller self-check failed; re-marking` followed by the corrected `(Recommended)` prompt.
 
    These three together = the option is `(Recommended)`. Render the prompt as:
 
@@ -175,15 +206,25 @@ For each accepted finding:
 
 - **Resolve the offending text via grep before applying.** The recorded `file:line` is a hint, not a guarantee. The controller MUST run `rg --line-number --no-heading <pattern> <file>` (or `grep -n`) where `<pattern>` is a unique substring of the offending text from the explain block's "What I see" line.
   - **Exactly one match** → proceed; the file:line is correct, edit there.
-  - **Zero matches** → the file may have changed since audit. Refuse to apply this finding. Re-run the relevant audit script (scan-content.js, extract-sections.js) and ask the user to re-confirm.
-  - **Multiple matches** → ambiguous edit target. Refuse to apply. Print all matches with line numbers and ask the user which one to act on, or to skip the finding.
-- After resolution, use `Read` on the file at the confirmed line and continue with the recommendation (CUT / MERGE / SHORTEN / REWRITE).
+  - **Zero matches** → the controller **HALTS this finding immediately**. It does not edit, does not guess a line. The file may have changed since audit. Re-run the relevant audit script (scan-content.js, extract-sections.js) and ask the user to re-confirm. Halting on zero matches is mandatory, not optional.
+  - **Multiple matches (>1)** → the controller **HALTS this finding immediately**. Ambiguous edit target — no edit is applied. Print all matches with line numbers and ask the user which one to act on, or to skip the finding.
+
+  The grep-verify gate is enforced: the controller MUST NOT fall through to an `Edit`/`Write` when grep returns anything other than exactly one match. There is no override affordance.
+- After resolution, use `Read` on the file at the confirmed line and continue with the recommendation (CUT / MERGE / SHORTEN / REWRITE / F1 / F2 / F3 / F4).
 - Apply the recommended change in the **stack idiom recorded in page-analysis**:
   - **CUT**: remove the section's element + its component import + any orphaned references the grep finds.
   - **MERGE**: move the candidate's distinguishing content into the survivor's component, preserving structure; remove the candidate; remove orphaned imports.
   - **SHORTEN**: remove paragraphs / list items inside the section per the recommendation.
   - **REWRITE**: replace decorative codes with the user-confirmed claim text. The skill never writes new claims — it inserts the text the user supplied at confirmation time.
+  - **F1** (missing label): add a visible `<label>` element associated with the input by `for`/`id`, or wrap the input in the `<label>`. Do not rely on placeholder text as the label.
+  - **F2** (required not indicated): add a visible `*` or `(required)` text to the field's label and add `aria-required="true"` to the input.
+  - **F3** (errors not announced inline): wire the validation message into the markup near the offending field so it renders adjacent to that field and references it by name (`aria-describedby` to the message element).
+  - **F4** (missing autocomplete): add the correct `autocomplete` attribute to known fields (`name`, `email`, `organization`, etc.) per the field's purpose.
 - Use `Edit` (preferred) or `Write` only when a full rewrite is needed.
+
+### AP2.F — F-rule findings are in scope and applied here
+
+F-rule findings (F1–F4, defined in `principles/secondary-checks.md`) are applied in this step exactly like C/RA/IA findings. The controller MUST NOT defer them to a "separate accessibility pass" — that phrasing is forbidden (see AP1.0 "Forbidden scope-punt phrasing"). Each accepted F-rule finding gets the grep-verify gate above, then the F1/F2/F3/F4 edit branch listed above, in the stack idiom recorded in page-analysis.
 
 The skill **never**:
 
@@ -221,7 +262,10 @@ EOF
 )"
 ```
 
-- After all per-route commits land, run `workflows/verify-apply.md` against every route in the run. If verify-apply HALTs (regression or partial), do not proceed to AP5; surface the halt report to the user and wait for instruction. If verify-apply succeeds, proceed to AP5.
+- After all per-route commits land, the controller **MUST run `workflows/verify-apply.md` against every route in the run, unconditionally**. There is no "skip verify" affordance, no fast path, and no user option to bypass verify-apply. Verify-apply always runs before AP5.
+- Verify-apply re-runs `scan-content.js` against each applied route and diffs the post-apply scan against the claimed cuts. If a claimed cut does not appear in the scan diff (the cut did not land in source), or any route regresses or is partial, verify-apply **HALTs**.
+- The HALT report MUST surface the `scan-content.js` re-scan diff: for each route, list the claimed cuts vs. what the re-scan actually shows removed/changed, so the apply-fidelity gap (claimed-but-not-landed cuts) is visible to the user.
+- On HALT, do not proceed to AP5; surface the full halt report (including the scan diff) to the user and wait for instruction. Only when verify-apply succeeds for every route does the controller proceed to AP5.
 
 ## Step AP5 — No push, no PR
 

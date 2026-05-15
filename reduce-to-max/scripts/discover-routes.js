@@ -1,7 +1,8 @@
 // discover-routes.js — discover marketing routes from a base URL.
 //
 // Sources, in priority order:
-//   1. sitemap.xml (most authoritative)
+//   1. sitemap.xml (most authoritative) — skipped for localhost / private IPs
+//      (no sitemap in practice; probe just wastes a 5s timeout)
 //   2. a-href crawl from base URL, same-origin only, depth 1
 //
 // Filters out:
@@ -48,32 +49,52 @@ function classify(path) {
   return "ok";
 }
 
+// Local / private-network hosts don't ship a sitemap.xml in practice. Probing
+// it just burns a 5s timeout. Detect those and skip straight to the crawl.
+function isLocalHost(hostname) {
+  const h = (hostname || "").toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h === "127.0.0.1" || h === "::1") return true;
+  if (h.endsWith(".local") || h.endsWith(".localdomain")) return true;
+  // Private IPv4 ranges: 10.*, 192.168.*, 172.16-31.*
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  return false;
+}
+
+let skipSitemap = false;
+try {
+  skipSitemap = isLocalHost(new URL(BASE).hostname);
+} catch (e) { /* malformed BASE — fall back to attempting sitemap */ }
+
 const page = await browser.getPage("discover-routes");
 
-// Try sitemap.xml first
+// Try sitemap.xml first (unless local — see isLocalHost above)
 let routes = [];
 let source = "crawl";
 let sitemapAttempted = false;
 
-try {
-  await page.goto(BASE + "/sitemap.xml", { waitUntil: "domcontentloaded", timeout: 5000 });
-  sitemapAttempted = true;
-  const xml = await page.content();
-  const matches = xml.match(/<loc>\s*([^<]+?)\s*<\/loc>/gi) || [];
-  if (matches.length > 0) {
-    source = "sitemap";
-    matches.forEach((m) => {
-      const url = m.replace(/<\/?loc>/gi, "").trim();
-      try {
-        const u = new URL(url);
-        if (u.origin === BASE) {
-          routes.push({ path: u.pathname, url });
-        }
-      } catch (e) { /* skip malformed */ }
-    });
+if (!skipSitemap) {
+  try {
+    await page.goto(BASE + "/sitemap.xml", { waitUntil: "domcontentloaded", timeout: 5000 });
+    sitemapAttempted = true;
+    const xml = await page.content();
+    const matches = xml.match(/<loc>\s*([^<]+?)\s*<\/loc>/gi) || [];
+    if (matches.length > 0) {
+      source = "sitemap";
+      matches.forEach((m) => {
+        const url = m.replace(/<\/?loc>/gi, "").trim();
+        try {
+          const u = new URL(url);
+          if (u.origin === BASE) {
+            routes.push({ path: u.pathname, url });
+          }
+        } catch (e) { /* skip malformed */ }
+      });
+    }
+  } catch (e) {
+    // sitemap unavailable, fall back to crawl
   }
-} catch (e) {
-  // sitemap unavailable, fall back to crawl
 }
 
 if (source === "crawl") {
