@@ -10,8 +10,10 @@ Public skill collection. Three themes:
 
 ### Solo multi-agent skills
 
-- **`solo-multi-agent-brainstorm`** — Run a moderated panel of 3 AI agents on a hard decision. Mix vendors (Claude, Codex, Gemini, …) for cross-vendor disagreement. Get a synthesized verdict instead of a single-LLM hot take.
-- **`solo-orchestration`** — Foundation library for any Solo multi-agent workflow. Push-based reporting (no polling), cross-project scoping, multi-vendor preflight that wires Solo MCP into Codex/Gemini/Amp/OpenCode configs.
+- **`solo-orchestration`** — Foundation library for any Solo multi-agent workflow. The core value is **push-based reporting**: spawned agents call back on terminal events instead of the orchestrator polling on a timer. Zero token cost while nothing happens. This works with a single Claude agent — no multi-vendor setup required. Cross-project scoping and the multi-vendor preflight are bolt-on accelerators, not prerequisites.
+- **`solo-multi-agent-brainstorm`** — Run a moderated panel of 3 AI agents on a hard decision. Mix vendors (Claude, Codex, Gemini, …) for cross-vendor disagreement. **Situational and expensive** — a 3-panelist × 3-round panel burns real tokens. Reserve for high-stakes, hard-to-reverse decisions (architecture calls, cross-repo migrations), not routine questions a single agent answers fine.
+
+> **If you only use Claude:** you need none of the multi-vendor machinery. Solo auto-wires Solo MCP into Claude. Install `solo-orchestration`, use the push-based reporting patterns, and skip every "multi-vendor" / "preflight" section below.
 
 ### Standalone skills
 
@@ -50,6 +52,8 @@ ln -s ~/skills-src/solo-multi-agent-brainstorm ~/.claude/skills/solo-multi-agent
 ```
 
 ## Setup for multi-vendor brainstorms
+
+> **Skip this whole section if you only use Claude.** Solo's default Claude wiring is enough for push-based orchestration and single-vendor panels. Multi-vendor setup only matters when you deliberately want cross-vendor disagreement on a panel.
 
 Solo MCP is auto-wired only into Claude. For Codex, Gemini, Amp, or OpenCode panelists, the runtime's config needs an `mcp_servers.solo` entry.
 

@@ -136,6 +136,8 @@ Do NOT:
 
 ## Multi-Vendor Preflight
 
+> **Skipping the preflight (read first).** This entire section is an *optional accelerator* for multi-vendor workflows. If your workflow is Claude-only — single orchestrator spawning Claude workers, push-based reporting — you do **not** need any of this. Solo's bundled Claude wiring is known-good; preflight would be a no-op. The preflight earns its ~30–60s cost only when you are about to spawn Codex/Gemini/Amp/OpenCode and want to fail fast instead of stalling mid-flight. See "Skipping the preflight" at the end of this section for the precise skip conditions.
+
 Spawning a non-Claude runtime (Codex, Gemini, Amp, OpenCode) only works if that runtime has Solo MCP wired into its own config. Solo does NOT auto-inject. Without the wiring, the spawned agent has no `whoami` / `scratchpad_write` tools and cannot follow any reporting contract.
 
 Run this preflight **once at the start of any multi-agent workflow**. It is the single source of truth for "which vendors can actually participate right now". Downstream skills (e.g. `solo-multi-agent-brainstorm`) MUST consume its output instead of building their own probe.
@@ -159,6 +161,19 @@ Run this preflight **once at the start of any multi-agent workflow**. It is the 
 ```
 
 The downstream skill picks vendors with `status == OK`. Anything else is surfaced to the user with the install/auth hint and excluded.
+
+### Dry-run mode (default for first run on a machine)
+
+Config writes touch user-global files (`~/.codex/config.toml`, `~/.gemini/settings.json`, …). Before the first real write on a given machine, run the preflight in **dry-run**:
+
+```
+1. enabled = list_agent_tools()
+2. For each tool: read vendor config, compute the patch
+3. Print a unified diff of every intended change (file path + before/after)
+4. Exit WITHOUT writing. No backups created, no probe spawned.
+```
+
+Surface the diff to the user and let them opt in ("apply these patches? y/N"). Only on explicit opt-in do you proceed to the writing + probe path. Dry-run is cheap (no spawns) and makes the blast radius visible before anything mutates. Skip dry-run only when the configs are already known-patched from a prior session in the same machine state.
 
 ### Vendor config registry
 
@@ -249,6 +264,8 @@ If a user wants this they can set the env var (Tier A) or complete auth manually
 - **`send_input` text not always submitted.** Some TUIs swallow `\n`. Probe success means "the prompt actually executed", not "bytes were sent". Verify via `get_process_output` looking for tool-call evidence. Codex specifically may need a raw CR (`bytes=[13]`) follow-up.
 - **MCP entry can be syntactically present but unloadable** (wrong path, wrong format, wrong field name per vendor). The probe's `whoami` call is the only ground-truth health check.
 - **Probe scratchpads accumulate.** Always archive on probe exit. Tag `probe-multivendor`.
+- **Idempotency-vs-stale-key trap.** Idempotency relies on a match string ("is there already a `solo` entry?"). When a vendor renames a config key upstream (e.g. `mcp_servers` → `mcpServers`, or a nested field name changes), the old match string no longer hits — preflight concludes "not present" and blindly appends a *duplicate* entry under the new schema, or writes a stale-shaped one that never loads. Config presence is **not** ground truth. The probe round (`whoami` test) is the only ground truth: if `whoami` resolves Solo tools, the wiring is good regardless of what the match string thinks; if it fails, re-derive the current key shape from the vendor's own docs before re-patching. Never trust "entry found" alone.
+- **Backup retention policy.** Each write creates `<file>.bak-<unix-ts>`. Keep only the **last 3** backups per config file; prune older ones at the start of the next preflight (before creating the new backup). Unbounded `.bak-*` files leak old config state — and may contain credentials if the user hand-added secrets. Pruning is part of preflight, not a separate cleanup step.
 
 ### Skipping the preflight
 
